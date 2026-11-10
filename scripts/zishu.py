@@ -298,6 +298,55 @@ def sub_faces(faces):
     return faces.replace('url("_a/', 'url("../_a/')
 
 
+_MIME = {".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf",
+         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".svg": "image/svg+xml"}
+
+
+def _data_uri(p):
+    """把一个本地资源变成 data: URI。照片重新压缩以控制单文件体积：
+    JPG → JPEG q84；带透明的 PNG → WebP q88（保留透明）；字体原样。尺寸不变（已是 2 倍图）。"""
+    import base64
+    import io
+    ext = p.suffix.lower()
+    raw, mime = None, _MIME.get(ext, "application/octet-stream")
+    try:
+        if ext in (".jpg", ".jpeg"):
+            buf = io.BytesIO()
+            Image.open(p).convert("RGB").save(buf, "JPEG", quality=84, optimize=True, progressive=True)
+            raw = buf.getvalue() if buf.tell() < p.stat().st_size else None
+        elif ext == ".png":
+            im = Image.open(p)
+            if im.mode in ("RGBA", "LA", "P"):
+                buf = io.BytesIO()
+                im.convert("RGBA").save(buf, "WEBP", quality=88, method=5)
+                raw, mime = buf.getvalue(), "image/webp"
+    except Exception:
+        raw = None
+    if raw is None:
+        raw = p.read_bytes()
+        mime = _MIME.get(ext, "application/octet-stream")
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+
+
+def inline_assets(html, base):
+    """把 html 里所有指向 _a/ 的 src="…" 和 url(…) 换成内嵌数据，得到一个可以单独发送的文件。
+    找不到的文件保持原样（不会让整页失败）。"""
+    cache = {}
+
+    def rep(m):
+        rel = m.group(2)
+        p = (Path(base) / rel)
+        if not p.exists():
+            return m.group(0)
+        if rel not in cache:
+            cache[rel] = _data_uri(p)
+        return f'{m.group(1)}{cache[rel]}{m.group(3)}'
+
+    html = re.sub(r'(src=")(_a/[^"]+)(")', rep, html)
+    html = re.sub(r'(url\(["\']?)(_a/[^"\')]+)(["\']?\))', rep, html)
+    return html
+
+
 def section(sp):
     return f'<section class="s" id="{sp["sid"]}" style="background:{sp["bg"]};color:{sp.get("fg", "#1A1A1C")}">{sp["html"]}</section>'
 
@@ -318,7 +367,8 @@ button{{background:#333;color:#fff;border:0;padding:6px 12px;border-radius:6px;c
 .note{{margin:10px 0 0 18px;color:#cfc6b8;max-width:1120px;font-size:12.5px}} body.hide .note{{display:none}}
 @media print{{.top,.lab,.note{{display:none}} body{{background:#fff}} .row{{padding:0}} .s{{break-after:page}} .s::after{{display:none}} @page{{size:297mm 210mm;margin:0}}}}
 </style><body><div class="top"><b>{S.esc(title)}</b><span>{len(plan) * 2} 页 · 每个跨页下面是「为什么这样排」</span><button onclick="document.body.classList.toggle('hide')">显示 / 隐藏 旁注</button></div>{blocks}</body></html>"""
-    (out / "zine.html").write_text(reading, encoding="utf-8")
+    # 阅读版要能单独发给别人：图片、字体全部内嵌成一个文件（不依赖旁边的 _a/ 文件夹）
+    (out / "zine.html").write_text(inline_assets(reading, out), encoding="utf-8")
 
     # 单页 html（截图用）
     hd = out / "_html"
