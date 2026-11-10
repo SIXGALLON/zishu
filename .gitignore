@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+# 用户产出与输入不进仓库
+out/
+output*/
+*.pdf
